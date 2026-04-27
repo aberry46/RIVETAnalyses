@@ -1,118 +1,144 @@
 // -*- C++ -*-
+
 #include "Rivet/Analysis.hh"
-#include "Rivet/Projections/FinalState.hh"
-#include "Rivet/Projections/FastJets.hh"
-#include "Rivet/Projections/LeptonFinder.hh"
-#include "Rivet/Projections/MissingMomentum.hh"
-#include "Rivet/Projections/DirectFinalState.hh"
-#include "../Centralities/RHICCentrality.hh"
+#include "Rivet/Projections/UnstableParticles.hh"
+
+#include <cmath>
 
 namespace Rivet {
 
 
-  /// @brief Add a short analysis description here
   class PHENIX_2002_I585561 : public Analysis {
   public:
 
-    /// Constructor
     RIVET_DEFAULT_ANALYSIS_CTOR(PHENIX_2002_I585561);
 
 
-    /// @name Analysis methods
-    /// @{
+    void init() override {
+      declare(UnstableParticles(), "UFS");
 
-    /// Book histograms and initialise projections before the run
-    void init() {
+      // Minimum-bias spectra.
+      book(_hLambdaMB, 1, 1, 1);
+      book(_hLambdaBarMB, 1, 1, 2);
 
-      // Initialise and register projections
+      // Ratio vs pT.
+      book(_hRatioPtNum, "TMP/LambdaRatioPtNum", refData(2, 1, 1));
+      book(_hRatioPtDen, "TMP/LambdaRatioPtDen", refData(2, 1, 1));
+      book(_sRatioPt, 2, 1, 1);
 
-        
-      //Projection for centrality determination
-      declareCentrality(RHICCentrality("PHENIX"),"RHIC_2019_CentralityCallibration:exp=PHENIX","CMULT","CMULT");
-      // The basic final-state projection:
-      // all final-state particles within
-      // the given eta acceptance
-      const FinalState fs(Cuts::abseta < 4.9);
-
-      // The final-state particles declared above are clustered using FastJet with
-      // the anti-kT algorithm and a jet-radius parameter 0.4
-      // muons and neutrinos are excluded from the clustering
-      FastJets jetfs(fs, JetAlg::ANTIKT, 0.4, JetMuons::NONE, JetInvisibles::NONE);
-      declare(jetfs, "jets");
-
-      // FinalState of direct photons and bare muons and electrons in the event
-      DirectFinalState photons(Cuts::abspid == PID::PHOTON);
-      DirectFinalState bare_leps(Cuts::abspid == PID::MUON || Cuts::abspid == PID::ELECTRON);
-
-      // Dress the bare direct leptons with direct photons within dR < 0.1,
-      // and apply some fiducial cuts on the dressed leptons
-      Cut lepton_cuts = Cuts::abseta < 2.5 && Cuts::pT > 20*GeV;
-      LeptonFinder dressed_leps(bare_leps, photons, 0.1, lepton_cuts);
-      declare(dressed_leps, "leptons");
-
-      // Missing momentum
-      declare(MissingMomentum(fs), "MET");
-
-      // Book histograms
-      // specify custom binning
-      book(_h["XXXX"], "myh1", 20, 0.0, 100.0);
-      book(_h["YYYY"], "myh2", logspace(20, 1e-2, 1e3));
-      book(_h["ZZZZ"], "myh3", {0.0, 1.0, 2.0, 4.0, 8.0, 16.0});
-      // take binning from reference data using HEPData ID (digits in "d01-x01-y01" etc.)
-      book(_h["AAAA"], 1, 1, 1);
-      book(_p["BBBB"], 2, 1, 1);
-      book(_c["CCCC"], 3, 1, 1);
-
+      book(_cAllEvents, "TMP/AllEvents");
     }
 
 
-    /// Perform the per-event analysis
-    void analyze(const Event& event) {
+    void analyze(const Event& event) override {
+      _cAllEvents->fill();
 
-      // Retrieve dressed leptons, sorted by pT
-      Particles leptons = apply<FinalState>(event, "leptons").particles();
+      for (const Particle& p : apply<UnstableParticles>(event, "UFS").particles()) {
+        if (p.abspid() != PID::LAMBDA) continue;
+        if (std::abs(p.rapidity()) > 0.5) continue;
 
-      // Retrieve clustered jets, sorted by pT, with a minimum pT cut
-      Jets jets = apply<FastJets>(event, "jets").jetsByPt(Cuts::pT > 30*GeV);
+        const double pt = p.pT() / GeV;
+        if (!std::isfinite(pt)) continue;
 
-      // Remove all jets within dR < 0.2 of a dressed lepton
-      idiscardIfAnyDeltaRLess(jets, leptons, 0.2);
-
-      // Select jets ghost-associated to B-hadrons with a certain fiducial selection
-      Jets bjets = select(jets, hasBTag(Cuts::pT > 5*GeV && Cuts::abseta < 2.5));
-
-      // Veto event if there are no b-jets
-      if (bjets.empty()) vetoEvent;
-
-      // Apply a missing-momentum cut
-      if (apply<MissingMomentum>(event, "MET").missingPt() < 30*GeV)  vetoEvent;
-
-      // Fill histogram with leading b-jet pT
-      _h["XXXX"]->fill(bjets[0].pT()/GeV);
-
+        if (p.pid() == PID::LAMBDA) {
+          _hLambdaMB->fill(pt);
+          _hRatioPtDen->fill(pt);
+        } else if (p.pid() == -PID::LAMBDA) {
+          _hLambdaBarMB->fill(pt);
+          _hRatioPtNum->fill(pt);
+        }
+      }
     }
 
 
-    /// Normalise histograms etc., after the run
-    void finalize() {
+    void finalize() override {
+      const double nAll = _cAllEvents->sumW();
+      if (nAll <= 0.0) return;
 
-      normalize(_h["XXXX"]); // normalize to unity
-      normalize(_h["YYYY"], crossSection()/picobarn); // normalize to generated cross-section in pb (no cuts)
-      scale(_h["ZZZZ"], crossSection()/picobarn/sumW()); // norm to generated cross-section in pb (after cuts)
+      scaleInvariantYield(_hLambdaMB, nAll);
+      scaleInvariantYield(_hLambdaBarMB, nAll);
+      scaleInvariantYield(_hRatioPtNum, nAll);
+      scaleInvariantYield(_hRatioPtDen, nAll);
 
+      fillRatio(_sRatioPt, _hRatioPtNum, _hRatioPtDen);
     }
 
-    /// @}
+
+  private:
+
+    static constexpr double TWOPI = 6.28318530717958647693;
+    static constexpr double DY = 1.0;
+
+    void scaleInvariantYield(Histo1DPtr hist, double nEvents) const {
+      if (!hist || nEvents <= 0.0) return;
+
+      for (size_t i = 0; i < hist->numBins(); ++i) {
+        auto& bin = hist->bin(i);
+        const double pt = bin.xMid();
+        const double dpt = bin.xWidth();
+
+        if (pt <= 0.0 || dpt <= 0.0) continue;
+
+        const double factor = 1.0 / (nEvents * TWOPI * pt * dpt * DY);
+        if (std::isfinite(factor) && factor > 0.0) {
+          bin.scaleW(factor);
+        }
+      }
+    }
+
+    double ratioError(double numerator, double numeratorErr2,
+                      double denominator, double denominatorErr2) const {
+      if (numerator <= 0.0 || denominator <= 0.0) return 0.0;
+      if (numeratorErr2 < 0.0 || denominatorErr2 < 0.0) return 0.0;
+
+      const double ratio = numerator / denominator;
+      const double relErr2 = numeratorErr2 / sqr(numerator)
+                           + denominatorErr2 / sqr(denominator);
+      const double err = ratio * std::sqrt(relErr2);
+      return std::isfinite(err) ? err : 0.0;
+    }
 
 
-    /// @name Histograms
-    /// @{
-    map<string, Histo1DPtr> _h;
-    map<string, Profile1DPtr> _p;
-    map<string, CounterPtr> _c;
-    /// @}
+    void fillRatio(Scatter2DPtr scatter, Histo1DPtr num, Histo1DPtr den) const {
+      if (!scatter || !num || !den) return;
+
+      scatter->reset();
+
+      for (size_t i = 0; i < num->numBins(); ++i) {
+        const auto& numBin = num->bin(i);
+        const auto& denBin = den->bin(i);
+
+        const double numerator = numBin.sumW();
+        const double denominator = denBin.sumW();
+        const double x = numBin.xMid();
+        const double dx = 0.5 * numBin.xWidth();
+
+        double ratio = 0.0;
+        double err = 0.0;
+
+        if (numerator > 0.0 && denominator > 0.0) {
+          ratio = numerator / denominator;
+          err = ratioError(numerator, numBin.sumW2(),
+                           denominator, denBin.sumW2());
+        }
+
+        if (!std::isfinite(x) || !std::isfinite(dx)) continue;
+        if (!std::isfinite(ratio)) ratio = 0.0;
+        if (!std::isfinite(err)) err = 0.0;
+
+        scatter->addPoint(x, ratio, dx, err);
+      }
+    }
 
 
+    Histo1DPtr _hLambdaMB;
+    Histo1DPtr _hLambdaBarMB;
+
+    Histo1DPtr _hRatioPtNum;
+    Histo1DPtr _hRatioPtDen;
+    Scatter2DPtr _sRatioPt;
+
+    CounterPtr _cAllEvents;
   };
 
 
