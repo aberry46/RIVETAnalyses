@@ -1,4 +1,20 @@
 #!/bin/bash
+set -e
+
+EVENTS="${EVENTS:-5000}"
+
 rivet-build RivetPHENIX_2002_I585561.so PHENIX_2002_I585561.cc
+
 export RIVET_ANALYSIS_PATH=$PWD
-rivet --pwd -p ../Centralities/Calibration/calibration_PHENIX_AuAu200GeV.yoda -a PHENIX_2002_I585561:cent=GEN:beam=dAU200 -o Rivet.yoda ../testfiles/PYTHIAAuAuFileSMALLTEST.dat
+export PYTHONPATH="$(rivet-config --pythonpath):${PYTHONPATH}"
+export LD_LIBRARY_PATH="$(rivet-config --libdir):${LD_LIBRARY_PATH}"
+
+rm -f AuAu130GeV.hepmc
+mkfifo AuAu130GeV.hepmc
+cat AuAu130GeV.hepmc > /dev/null &
+
+echo "Running ${EVENTS} events"
+pythia8-main144 -n "${EVENTS}" -c ../RunPYTHIAInDocker/AuAu130GeV.cmnd -c ../RunPYTHIAInDocker/main144HepMC.cmnd -c main144Rivet.cmnd -o AuAu130GeV
+
+pkill -f "cat AuAu130GeV.hepmc" || true
+rm -f AuAu130GeV.hepmc
